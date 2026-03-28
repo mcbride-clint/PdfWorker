@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PdfWorker — Client-side PDF Tools</title>
+  <link rel="stylesheet" href="css/bootstrap.min.css" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+
+  <!-- Navbar -->
+  <nav class="navbar navbar-dark bg-dark px-3 py-2">
+    <span class="navbar-brand mb-0 h5 d-flex align-items-center gap-2">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+        <path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/>
+      </svg>
+      PdfWorker
+    </span>
+    <span class="text-secondary small">All processing happens in your browser — nothing is uploaded anywhere.</span>
+  </nav>
+
+  <div class="container-fluid py-3 px-3">
+
+    <!-- Upload Zone -->
+    <div id="upload-zone" class="upload-zone mb-3">
+      <input type="file" id="file-input" accept=".pdf" multiple hidden />
+      <label for="file-input" class="upload-label">
+        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" class="mb-2 text-secondary" viewBox="0 0 16 16">
+          <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+          <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+        </svg>
+        <div><strong>Drop PDF files here</strong> or click to browse</div>
+        <div class="text-secondary small mt-1">Supports multiple files &bull; All processing is local</div>
+      </label>
+    </div>
+
+    <!-- Main content: file list + grid -->
+    <div id="main-content" class="d-none">
+
+      <!-- Toolbar -->
+      <div class="toolbar mb-3 d-flex flex-wrap align-items-center gap-2">
+        <span id="page-count-label" class="text-secondary small me-2"></span>
+
+        <button id="btn-download" class="btn btn-primary btn-sm" title="Merge all pages in current order and download">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+            <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+            <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+          </svg>
+          Download PDF
+        </button>
+
+        <!-- Split toggle button — reveals range controls -->
+        <button id="btn-split-toggle" class="btn btn-outline-secondary btn-sm" title="Extract a range of pages as a new PDF">
+          Split range…
+        </button>
+
+        <!-- Split range controls — hidden until toggle clicked -->
+        <div id="split-range-group" class="d-none d-flex align-items-center gap-1 split-group">
+          <span class="text-secondary small">pages</span>
+          <input type="number" id="split-from" class="form-control form-control-sm split-input" min="1" placeholder="from" />
+          <span class="text-secondary small">to</span>
+          <input type="number" id="split-to" class="form-control form-control-sm split-input" min="1" placeholder="to" />
+          <button id="btn-split" class="btn btn-outline-secondary btn-sm" title="Extract the selected page range as a new PDF">
+            Extract
+          </button>
+        </div>
+
+        <button id="btn-burst" class="btn btn-outline-secondary btn-sm" title="Save each page as its own PDF file">
+          Burst (1 PDF/page)
+        </button>
+
+        <button id="btn-clear" class="btn btn-outline-danger btn-sm ms-auto" title="Remove all pages and start over">
+          Clear All
+        </button>
+      </div>
+
+      <div class="row g-0">
+
+        <!-- File list sidebar -->
+        <div class="col-auto">
+          <div class="file-panel me-3">
+            <div class="file-panel-header text-secondary small mb-2">Loaded files</div>
+            <ul id="file-list" class="file-list list-unstyled mb-0"></ul>
+            <button id="btn-add-more" class="btn btn-outline-secondary btn-sm w-100 mt-2">
+              + Add more PDFs
+            </button>
+          </div>
+        </div>
+
+        <!-- Thumbnail grid -->
+        <div class="col">
+          <div id="thumbnail-grid" class="thumbnail-grid"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Empty state when no pages loaded -->
+    <div id="empty-hint" class="d-none text-center text-secondary py-5">
+      <p>Upload one or more PDFs above to get started.</p>
+    </div>
+
+  </div>
+
+  <!-- Toast notification -->
+  <div id="toast-container" class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+    <div id="toast" class="toast align-items-center text-bg-secondary border-0" role="alert">
+      <div class="d-flex">
+        <div id="toast-msg" class="toast-body"></div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load pdf-lib and PDF.js before app.js -->
+  <script src="js/pdf-lib.min.js"></script>
+  <script src="js/pdf.min.js"></script>
+  <script>
+    // PDF.js worker must be same-origin — bundled alongside pdf.min.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'js/pdf.worker.min.js';
+  </script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
