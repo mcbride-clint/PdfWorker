@@ -1,16 +1,15 @@
 /**
  * PdfWorker — app.js
  * 100% client-side PDF manipulation.
- * Dependencies: pdf-lib (MIT), PDF.js (Apache 2.0) — both bundled locally.
+ * Dependencies: pdf-lib (MIT), PDF.js (Apache 2.0), fflate (MIT) — all bundled locally.
  *
  * Storage strategy: source PDF bytes are kept as immutable Blobs.
- * Blobs cannot be transferred or neutered by Worker postMessage.
  * Each blob.arrayBuffer() call returns a fresh independent ArrayBuffer,
  * so no library can corrupt the stored data.
  */
 
 // ---------------------------------------------------------------------------
-// State
+// Typedefs
 // ---------------------------------------------------------------------------
 
 /**
@@ -19,50 +18,69 @@
  *   sourceFileName: string,
  *   sourcePdfBlob: Blob,
  *   originalPageIndex: number,
- *   thumbnailDataUrl: string|null
+ *   thumbnailDataUrl: string|null,
+ *   rotation: number
  * }} PageItem
+ *
+ * @typedef {{ id: string, name: string, pages: PageItem[] }} DocItem
  */
 
-/** @type {PageItem[]} */
-let pages = [];
-
-/** @type {Array<{id:string, name:string, pageCount:number}>} */
-let loadedDocs = [];
-
-// Drag state
-let dragSourceIndex = -1;
-
 // ---------------------------------------------------------------------------
-// DOM refs (resolved once on DOMContentLoaded)
+// State
 // ---------------------------------------------------------------------------
 
-let uploadZone, fileInput, mainContent;
-let thumbnailGrid, fileList, pageCountLabel;
-let btnDownload, btnSplit, btnBurst, btnClear, btnAddMore;
-let splitFrom, splitTo;
-let toastEl, toastMsg;
-let bsToast;
+/** @type {DocItem[]} */
+let documents = [];
+
+/** @type {string|null} */
+let activeDocId = null;
+
+/** @type {{docId:string|null, pageIndex:number}} */
+let dragState = { docId: null, pageIndex: -1 };
+
+/** @type {string|null} */
+let selectedPageId = null;
+
+/** @type {{docId:string, pageIndex:number}|null} */
+let contextTarget = null;
+
+// Undo/redo history — index 0 = empty initial state
+/** @type {Array<DocItem[]>} */
+let history = [[]];
+let historyIndex = 0;
+const HISTORY_LIMIT = 50;
+
+// Download SVG icon (reused in createDocPane and restore)
+const DL_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>`;
+
+// ---------------------------------------------------------------------------
+// DOM refs (resolved on DOMContentLoaded)
+// ---------------------------------------------------------------------------
+
+let uploadZone, fileInput, mainContent, documentsContainer;
+let btnAddPdfs, btnNewDoc, btnUndo, btnRedo, btnClearAll;
+let toastEl, toastMsg, bsToast;
+let contextMenu, contextMoveSection, contextMoveTargets;
 
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
 
 document.addEventListener('DOMContentLoaded', () => {
-  uploadZone     = document.getElementById('upload-zone');
-  fileInput      = document.getElementById('file-input');
-  mainContent    = document.getElementById('main-content');
-  thumbnailGrid  = document.getElementById('thumbnail-grid');
-  fileList       = document.getElementById('file-list');
-  pageCountLabel = document.getElementById('page-count-label');
-  btnDownload    = document.getElementById('btn-download');
-  btnSplit       = document.getElementById('btn-split');
-  btnBurst       = document.getElementById('btn-burst');
-  btnClear       = document.getElementById('btn-clear');
-  btnAddMore     = document.getElementById('btn-add-more');
-  splitFrom      = document.getElementById('split-from');
-  splitTo        = document.getElementById('split-to');
-  toastEl        = document.getElementById('toast');
-  toastMsg       = document.getElementById('toast-msg');
+  uploadZone         = document.getElementById('upload-zone');
+  fileInput          = document.getElementById('file-input');
+  mainContent        = document.getElementById('main-content');
+  documentsContainer = document.getElementById('documents-container');
+  btnAddPdfs         = document.getElementById('btn-add-pdfs');
+  btnNewDoc          = document.getElementById('btn-new-doc');
+  btnUndo            = document.getElementById('btn-undo');
+  btnRedo            = document.getElementById('btn-redo');
+  btnClearAll        = document.getElementById('btn-clear-all');
+  toastEl            = document.getElementById('toast');
+  toastMsg           = document.getElementById('toast-msg');
+  contextMenu        = document.getElementById('context-menu');
+  contextMoveSection = document.getElementById('context-menu-move-section');
+  contextMoveTargets = document.getElementById('context-menu-move-targets');
 
   bsToast = {
     show(msg, variant = 'secondary') {
@@ -72,11 +90,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  // Upload zone
   fileInput.addEventListener('change', () => {
     if (fileInput.files.length) handleFiles(fileInput.files);
   });
-
-  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    uploadZone.classList.add('drag-over');
+  });
   uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
   uploadZone.addEventListener('drop', e => {
     e.preventDefault();
@@ -84,50 +105,192 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
   });
 
-  btnAddMore.addEventListener('click', () => fileInput.click());
-  btnDownload.addEventListener('click', handleDownload);
-  btnSplit.addEventListener('click', handleSplitRange);
-  btnBurst.addEventListener('click', handleBurst);
-  btnClear.addEventListener('click', handleClearAll);
+  // Global toolbar
+  btnAddPdfs.addEventListener('click', () => fileInput.click());
+  btnNewDoc.addEventListener('click', handleNewDoc);
+  btnUndo.addEventListener('click', undo);
+  btnRedo.addEventListener('click', redo);
+  btnClearAll.addEventListener('click', handleClearAll);
 
-  document.getElementById('btn-split-toggle').addEventListener('click', () => {
-    const group = document.getElementById('split-range-group');
-    const hidden = group.classList.toggle('d-none');
-    document.getElementById('btn-split-toggle').textContent = hidden ? 'Split range…' : 'Hide split';
+  // Context menu — hide on outside click or scroll
+  document.addEventListener('click', e => {
+    if (!contextMenu.contains(e.target)) hideContextMenu();
   });
+  document.addEventListener('scroll', hideContextMenu, true);
+
+  // Context menu action dispatch ([data-action] items bubble to the menu element)
+  contextMenu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.closest('[data-action]')?.dataset.action;
+    if (action && contextTarget) handleContextAction(action);
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', handleKeyDown);
+
+  updateUndoRedoButtons();
 });
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getDoc(docId) {
+  return documents.find(d => d.id === docId) ?? null;
+}
+
+function getAllPages() {
+  return documents.flatMap(d => d.pages);
+}
+
+/** Returns {docId, index} for a page ID, or null if not found. */
+function findPageLocation(pageId) {
+  for (const doc of documents) {
+    const index = doc.pages.findIndex(p => p.id === pageId);
+    if (index !== -1) return { docId: doc.id, index };
+  }
+  return null;
+}
+
+function escHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function setButtonBusy(btn, label) {
+  btn.disabled = true;
+  btn.textContent = label;
+}
+
+// ---------------------------------------------------------------------------
+// History / Undo / Redo
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot current state before a mutation.
+ * PageItems are treated as immutable objects — only arrays are copied.
+ */
+function saveHistory() {
+  history = history.slice(0, historyIndex + 1);
+  history.push(documents.map(doc => ({ ...doc, pages: [...doc.pages] })));
+  if (history.length > HISTORY_LIMIT) history.shift();
+  else historyIndex++;
+  updateUndoRedoButtons();
+}
+
+function undo() {
+  if (historyIndex <= 0) return;
+  historyIndex--;
+  restoreFromHistory();
+}
+
+function redo() {
+  if (historyIndex >= history.length - 1) return;
+  historyIndex++;
+  restoreFromHistory();
+}
+
+function restoreFromHistory() {
+  documents = history[historyIndex].map(d => ({ ...d, pages: [...d.pages] }));
+  if (!documents.find(d => d.id === activeDocId)) {
+    activeDocId = documents[0]?.id ?? null;
+  }
+  renderAll();
+  renderThumbnailsProgressively();
+  updateUndoRedoButtons();
+}
+
+function updateUndoRedoButtons() {
+  btnUndo.disabled = historyIndex <= 0;
+  btnRedo.disabled = historyIndex >= history.length - 1;
+}
+
+// ---------------------------------------------------------------------------
+// Document management
+// ---------------------------------------------------------------------------
+
+/** Create a new DocItem and append it to documents[]. */
+function createDoc(name = null) {
+  const doc = {
+    id: crypto.randomUUID(),
+    name: name ?? `Document ${documents.length + 1}`,
+    pages: [],
+  };
+  documents.push(doc);
+  return doc;
+}
+
+function handleNewDoc() {
+  saveHistory();
+  const doc = createDoc();
+  activeDocId = doc.id;
+  renderAll();
+}
+
+function removeDoc(docId) {
+  const doc = getDoc(docId);
+  if (!doc) return;
+  if (doc.pages.length > 0 && !confirm(`Remove "${doc.name}" and all its pages?`)) return;
+  saveHistory();
+  documents = documents.filter(d => d.id !== docId);
+  if (activeDocId === docId) activeDocId = documents[0]?.id ?? null;
+  if (selectedPageId && !findPageLocation(selectedPageId)) selectedPageId = null;
+  renderAll();
+}
+
+function setActiveDoc(docId) {
+  activeDocId = docId;
+  document.querySelectorAll('.doc-pane').forEach(p => {
+    p.classList.toggle('doc-pane--active', p.dataset.docId === docId);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // File loading
 // ---------------------------------------------------------------------------
 
-async function handleFiles(fileList_) {
+/**
+ * Load PDF files into a document.
+ * @param {FileList} fileList_
+ * @param {string|null} targetDocId  If null, uses activeDocId or creates a new doc.
+ */
+async function handleFiles(fileList_, targetDocId = null) {
   const files = Array.from(fileList_).filter(
     f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
   );
   if (!files.length) { bsToast.show('Please select PDF files only.', 'danger'); return; }
 
+  // Resolve target document
+  let doc = targetDocId ? getDoc(targetDocId) : (activeDocId ? getDoc(activeDocId) : null);
+  if (!doc) {
+    doc = createDoc();
+    activeDocId = doc.id;
+  }
+
+  saveHistory();
+
   for (const file of files) {
     try {
-      // Store source bytes as an immutable Blob.
-      // Blobs cannot be transferred or neutered by Web Workers.
-      // blob.arrayBuffer() always returns a fresh independent copy.
       const blob = new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
-
-      // Load a temporary copy just to count pages — never touch the stored blob directly
       const countBytes = new Uint8Array(await blob.arrayBuffer());
       const tempDoc = await PDFLib.PDFDocument.load(countBytes, { ignoreEncryption: true });
       const pageCount = tempDoc.getPageCount();
 
-      loadedDocs.push({ id: crypto.randomUUID(), name: file.name, pageCount });
-
       for (let i = 0; i < pageCount; i++) {
-        pages.push({
+        doc.pages.push({
           id: crypto.randomUUID(),
           sourceFileName: file.name,
-          sourcePdfBlob: blob,       // shared reference — the Blob itself is immutable
+          sourcePdfBlob: blob,
           originalPageIndex: i,
           thumbnailDataUrl: null,
+          rotation: 0,
         });
       }
     } catch (err) {
@@ -144,26 +307,21 @@ async function handleFiles(fileList_) {
 // PDF operations
 // ---------------------------------------------------------------------------
 
-/**
- * Load a PDFDocument from a Blob, returning a fresh parse each call.
- * @param {Blob} blob
- * @returns {Promise<PDFLib.PDFDocument>}
- */
+/** Parse a PDF from a Blob — returns a fresh PDFDocument each call. */
 async function loadDocFromBlob(blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   return PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
 }
 
 /**
- * Build a merged PDF from an ordered subset of pages.
- * Each unique source Blob is loaded only once per call.
+ * Build a merged PDF from an ordered subset of PageItems.
+ * Caches source PDFDocuments by Blob to avoid re-parsing.
+ * Applies per-page rotation via pdf-lib.
  * @param {PageItem[]} subset
  * @returns {Promise<Uint8Array>}
  */
 async function buildPdf(subset) {
   const result = await PDFLib.PDFDocument.create();
-
-  // Cache: Blob reference → loaded PDFDocument (avoids re-parsing the same source)
   const srcCache = new Map();
 
   for (const p of subset) {
@@ -174,18 +332,23 @@ async function buildPdf(subset) {
     }
     const [copied] = await result.copyPages(src, [p.originalPageIndex]);
     result.addPage(copied);
+
+    if (p.rotation !== 0) {
+      const addedPage = result.getPage(result.getPageCount() - 1);
+      addedPage.setRotation(PDFLib.degrees(p.rotation));
+    }
   }
 
   return result.save();
 }
 
-/**
- * Trigger a browser file download.
- * @param {Uint8Array} bytes
- * @param {string} filename
- */
+/** Trigger a browser download for a PDF Uint8Array. */
 function downloadPdf(bytes, filename) {
-  const blob = new Blob([bytes], { type: 'application/pdf' });
+  downloadBlob(new Blob([bytes], { type: 'application/pdf' }), filename);
+}
+
+/** Trigger a browser download for any Blob. */
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   document.body.appendChild(a);
@@ -194,44 +357,55 @@ function downloadPdf(bytes, filename) {
   URL.revokeObjectURL(url);
 }
 
+/** Sanitise a doc name for use in filenames. */
+function safeFilename(name) {
+  return name.replace(/\.pdf$/i, '').replace(/[/\\?%*:|"<>]/g, '-') || 'pdfworker';
+}
+
 // ---------------------------------------------------------------------------
 // Thumbnail rendering
 // ---------------------------------------------------------------------------
 
 /**
  * Progressively render thumbnails for all pages that don't have one yet.
- * Pages from the same source PDF share a single PDF.js document load.
+ * Groups pages by source Blob so each source PDF is opened only once.
  */
 async function renderThumbnailsProgressively() {
-  // Group pending pages by source Blob so each PDF is opened only once
   const groups = new Map();
-  for (let i = 0; i < pages.length; i++) {
-    if (pages[i].thumbnailDataUrl) continue;
-    const blob = pages[i].sourcePdfBlob;
+  for (const page of getAllPages()) {
+    if (page.thumbnailDataUrl) continue;
+    const blob = page.sourcePdfBlob;
     if (!groups.has(blob)) groups.set(blob, []);
-    groups.get(blob).push({ page: pages[i], index: i });
+    groups.get(blob).push(page);
   }
 
   for (const [blob, entries] of groups) {
-    // Fresh bytes for PDF.js — blob.arrayBuffer() is always an independent copy
     const pdfBytes = new Uint8Array(await blob.arrayBuffer());
     const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
 
-    for (const { page, index } of entries) {
+    for (const page of entries) {
       try {
         page.thumbnailDataUrl = await renderPageThumbnail(pdfDoc, page.originalPageIndex + 1);
       } catch {
         page.thumbnailDataUrl = null;
       }
 
-      // Update just this card without re-rendering the whole grid
-      const imgArea = thumbnailGrid.querySelector(`[data-id="${page.id}"] .thumb-img`);
+      // Update just this card's image area — no full re-render needed
+      const imgArea = document.querySelector(`[data-id="${page.id}"] .thumb-img`);
       if (imgArea) {
         if (page.thumbnailDataUrl) {
+          const isLandscape = page.rotation === 90 || page.rotation === 270;
+          imgArea.classList.toggle('thumb-img--landscape', isLandscape);
           imgArea.innerHTML = '';
           const img = document.createElement('img');
           img.src = page.thumbnailDataUrl;
-          img.alt = `Page ${index + 1}`;
+          img.alt = page.sourceFileName;
+          img.draggable = false;
+          if (page.rotation) {
+            img.style.transform = isLandscape
+              ? `translate(-50%, -50%) rotate(${page.rotation}deg)`
+              : `rotate(${page.rotation}deg)`;
+          }
           imgArea.appendChild(img);
         } else {
           imgArea.innerHTML = '<div class="thumb-placeholder thumb-placeholder--error">PDF</div>';
@@ -245,10 +419,10 @@ async function renderThumbnailsProgressively() {
 
 /**
  * Render one page from an already-open PDF.js document to a PNG data URL.
- * @param {import('pdfjs-dist').PDFDocumentProxy} pdfDoc
- * @param {number} pageNumber 1-based
- * @param {number} width target width in px
- * @returns {Promise<string>} PNG data URL
+ * @param {object} pdfDoc  PDF.js PDFDocumentProxy
+ * @param {number} pageNumber  1-based
+ * @param {number} [width=160]  target width in pixels
+ * @returns {Promise<string>}  PNG data URL
  */
 async function renderPageThumbnail(pdfDoc, pageNumber, width = 160) {
   const page = await pdfDoc.getPage(pageNumber);
@@ -270,46 +444,211 @@ async function renderPageThumbnail(pdfDoc, pageNumber, width = 160) {
 // ---------------------------------------------------------------------------
 
 function renderAll() {
-  const hasPages = pages.length > 0;
-  uploadZone.classList.toggle('compact', hasPages);
-  mainContent.classList.toggle('d-none', !hasPages);
-  renderFileList();
-  renderGrid();
-  updatePageCountLabel();
-  updateSplitInputBounds();
-}
+  const hasContent = documents.length > 0;
+  uploadZone.classList.toggle('compact', hasContent);
+  mainContent.classList.toggle('d-none', !hasContent);
 
-function renderFileList() {
-  fileList.innerHTML = '';
-  for (const doc of loadedDocs) {
-    const li = document.createElement('li');
-    li.className = 'file-list-item d-flex align-items-start justify-content-between gap-2 mb-1';
-    li.innerHTML = `
-      <span class="file-item-name">${escHtml(doc.name)}</span>
-      <span class="badge bg-secondary flex-shrink-0">${doc.pageCount}</span>
-    `;
-    fileList.appendChild(li);
+  documentsContainer.innerHTML = '';
+  for (const doc of documents) {
+    documentsContainer.appendChild(createDocPane(doc));
   }
+
+  // Restore selection highlight after DOM rebuild
+  setSelectedPage(selectedPageId);
+  updateUndoRedoButtons();
 }
 
-function renderGrid() {
-  thumbnailGrid.innerHTML = '';
-  pages.forEach((page, index) => thumbnailGrid.appendChild(createCard(page, index)));
+/** Build the full DOM element for one document pane. */
+function createDocPane(doc) {
+  const pane = document.createElement('div');
+  pane.className = 'doc-pane';
+  if (doc.id === activeDocId) pane.classList.add('doc-pane--active');
+  pane.dataset.docId = doc.id;
+  pane.addEventListener('click', () => setActiveDoc(doc.id));
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  const header = document.createElement('div');
+  header.className = 'doc-pane-header';
+
+  // Editable document name
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'doc-name-input';
+  nameInput.value = doc.name;
+  nameInput.addEventListener('click', e => e.stopPropagation());
+  nameInput.addEventListener('change', () => {
+    doc.name = nameInput.value.trim() || doc.name;
+    nameInput.value = doc.name;
+  });
+
+  // Download button
+  const btnDownload = document.createElement('button');
+  btnDownload.className = 'btn btn-primary btn-sm';
+  btnDownload.innerHTML = `${DL_ICON}Download PDF`;
+  btnDownload.title = 'Download this document as a PDF';
+  btnDownload.addEventListener('click', e => {
+    e.stopPropagation();
+    handleDocDownload(doc.id, btnDownload);
+  });
+
+  // Burst button
+  const btnBurst = document.createElement('button');
+  btnBurst.className = 'btn btn-outline-secondary btn-sm';
+  btnBurst.textContent = 'Burst';
+  btnBurst.title = 'Save each page as its own PDF file';
+  btnBurst.addEventListener('click', e => {
+    e.stopPropagation();
+    handleDocBurst(doc.id, btnBurst);
+  });
+
+  // ZIP button
+  const btnZip = document.createElement('button');
+  btnZip.className = 'btn btn-outline-secondary btn-sm';
+  btnZip.textContent = 'ZIP';
+  btnZip.title = 'Download all pages as individual PDFs in a ZIP archive';
+  btnZip.addEventListener('click', e => {
+    e.stopPropagation();
+    handleDocZip(doc.id, btnZip);
+  });
+
+  // Split range toggle
+  const btnSplitToggle = document.createElement('button');
+  btnSplitToggle.className = 'btn btn-outline-secondary btn-sm';
+  btnSplitToggle.textContent = 'Split range…';
+  btnSplitToggle.title = 'Extract a range of pages as a new PDF';
+
+  // Split range control group (hidden by default)
+  const splitGroup = document.createElement('div');
+  splitGroup.className = 'd-none split-group';
+
+  const splitFromInput = document.createElement('input');
+  splitFromInput.type = 'number';
+  splitFromInput.className = 'form-control form-control-sm split-input';
+  splitFromInput.min = 1;
+  splitFromInput.placeholder = 'from';
+  splitFromInput.addEventListener('click', e => e.stopPropagation());
+
+  const splitToInput = document.createElement('input');
+  splitToInput.type = 'number';
+  splitToInput.className = 'form-control form-control-sm split-input';
+  splitToInput.min = 1;
+  splitToInput.placeholder = 'to';
+  splitToInput.addEventListener('click', e => e.stopPropagation());
+
+  const btnSplitExtract = document.createElement('button');
+  btnSplitExtract.className = 'btn btn-outline-secondary btn-sm';
+  btnSplitExtract.textContent = 'Extract';
+  btnSplitExtract.addEventListener('click', e => {
+    e.stopPropagation();
+    handleDocSplitRange(doc.id, splitFromInput, splitToInput, btnSplitExtract);
+  });
+
+  splitGroup.appendChild(document.createTextNode('pages '));
+  splitGroup.appendChild(splitFromInput);
+  splitGroup.appendChild(document.createTextNode(' to '));
+  splitGroup.appendChild(splitToInput);
+  splitGroup.appendChild(btnSplitExtract);
+
+  btnSplitToggle.addEventListener('click', e => {
+    e.stopPropagation();
+    const hidden = splitGroup.classList.toggle('d-none');
+    btnSplitToggle.textContent = hidden ? 'Split range…' : 'Hide split';
+    if (!hidden) {
+      splitFromInput.max = doc.pages.length;
+      splitToInput.max = doc.pages.length;
+    }
+  });
+
+  // Remove document button
+  const btnRemoveDoc = document.createElement('button');
+  btnRemoveDoc.className = 'btn btn-outline-danger btn-sm ms-auto';
+  btnRemoveDoc.textContent = '×';
+  btnRemoveDoc.title = 'Remove this document';
+  btnRemoveDoc.addEventListener('click', e => { e.stopPropagation(); removeDoc(doc.id); });
+
+  header.appendChild(nameInput);
+  header.appendChild(btnDownload);
+  header.appendChild(btnBurst);
+  header.appendChild(btnZip);
+  header.appendChild(btnSplitToggle);
+  header.appendChild(splitGroup);
+  header.appendChild(btnRemoveDoc);
+  pane.appendChild(header);
+
+  // ── Body / Grid ─────────────────────────────────────────────────────────
+  const body = document.createElement('div');
+  body.className = 'doc-pane-body';
+
+  const grid = document.createElement('div');
+  grid.className = 'thumbnail-grid';
+  grid.dataset.docId = doc.id;
+
+  if (doc.pages.length === 0) {
+    grid.innerHTML = '<div class="doc-pane-empty">Drop PDF files here or use "+ Add PDFs" to add pages</div>';
+  } else {
+    doc.pages.forEach((page, index) => grid.appendChild(createCard(page, index, doc.id)));
+  }
+
+  // ── File drag onto grid ─────────────────────────────────────────────────
+  grid.addEventListener('dragover', e => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      grid.classList.add('drag-over-files');
+    } else if (dragState.docId !== null) {
+      // Allow page drops on the empty-area of the grid
+      e.preventDefault();
+    }
+  });
+  grid.addEventListener('dragleave', e => {
+    if (!grid.contains(e.relatedTarget)) grid.classList.remove('drag-over-files');
+  });
+  grid.addEventListener('drop', e => {
+    grid.classList.remove('drag-over-files');
+    if (e.dataTransfer.files.length > 0) {
+      // File drop — load into this document
+      e.preventDefault();
+      e.stopPropagation();
+      handleFiles(e.dataTransfer.files, doc.id);
+    } else if (dragState.docId !== null && !e.target.closest('.thumb-card')) {
+      // Page dropped on empty grid area — append to end of this doc
+      e.preventDefault();
+      if (dragState.docId === doc.id) return; // same doc no-op
+      saveHistory();
+      movePageBetweenDocs(dragState.docId, dragState.pageIndex, doc.id, doc.pages.length);
+      renderAll();
+      renderThumbnailsProgressively();
+    }
+  });
+
+  body.appendChild(grid);
+  pane.appendChild(body);
+  return pane;
 }
 
-function createCard(page, index) {
+/** Build a thumbnail card DOM element for one page. */
+function createCard(page, index, docId) {
   const card = document.createElement('div');
   card.className = 'thumb-card';
+  if (page.id === selectedPageId) card.classList.add('thumb-card--selected');
   card.setAttribute('draggable', 'true');
   card.dataset.index = index;
   card.dataset.id = page.id;
 
+  // Image area
+  const isLandscape = page.rotation === 90 || page.rotation === 270;
   const imgArea = document.createElement('div');
-  imgArea.className = 'thumb-img';
+  imgArea.className = isLandscape ? 'thumb-img thumb-img--landscape' : 'thumb-img';
   if (page.thumbnailDataUrl) {
     const img = document.createElement('img');
     img.src = page.thumbnailDataUrl;
     img.alt = `Page ${index + 1}`;
+    img.draggable = false; // prevent browser from dragging the img instead of the card
+    if (page.rotation) {
+      img.style.transform = isLandscape
+        ? `translate(-50%, -50%) rotate(${page.rotation}deg)`
+        : `rotate(${page.rotation}deg)`;
+    }
     imgArea.appendChild(img);
   } else {
     imgArea.innerHTML = `<div class="thumb-placeholder">
@@ -317,174 +656,369 @@ function createCard(page, index) {
     </div>`;
   }
 
+  // Footer
   const footer = document.createElement('div');
   footer.className = 'thumb-footer';
   footer.innerHTML = `
     <span class="thumb-num">${index + 1}</span>
     <span class="thumb-name" title="${escHtml(page.sourceFileName)}">${escHtml(page.sourceFileName)}</span>
-    <button class="btn-remove" title="Remove this page" data-id="${page.id}">&times;</button>
+    <button class="btn-rotate" title="Rotate 90° clockwise">↻</button>
+    <button class="btn-remove" title="Remove this page">&times;</button>
   `;
 
   card.appendChild(imgArea);
   card.appendChild(footer);
 
-  // Drag-and-drop reorder
+  // ── Click to select ──────────────────────────────────────────────────────
+  card.addEventListener('click', e => {
+    if (e.target.closest('button')) return;
+    setSelectedPage(page.id);
+  });
+
+  // ── Context menu ─────────────────────────────────────────────────────────
+  card.addEventListener('contextmenu', e => {
+    e.stopPropagation();
+    showContextMenu(e, docId, index);
+  });
+
+  // ── Drag-and-drop ────────────────────────────────────────────────────────
   card.addEventListener('dragstart', e => {
-    dragSourceIndex = index;
+    dragState = { docId, pageIndex: index };
     card.classList.add('dragging');
+    e.dataTransfer.setData('application/x-pdfworker', 'page');
     e.dataTransfer.effectAllowed = 'move';
   });
   card.addEventListener('dragend', () => {
     card.classList.remove('dragging');
     document.querySelectorAll('.thumb-card').forEach(c => c.classList.remove('drag-over-card'));
-    dragSourceIndex = -1;
+    dragState = { docId: null, pageIndex: -1 };
   });
   card.addEventListener('dragover', e => {
+    if (dragState.docId === null) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (dragSourceIndex !== index) card.classList.add('drag-over-card');
+    if (!(dragState.docId === docId && dragState.pageIndex === index)) {
+      card.classList.add('drag-over-card');
+    }
   });
   card.addEventListener('dragleave', () => card.classList.remove('drag-over-card'));
   card.addEventListener('drop', e => {
     e.preventDefault();
+    e.stopPropagation(); // prevent grid drop handler from also firing
     card.classList.remove('drag-over-card');
-    if (dragSourceIndex >= 0 && dragSourceIndex !== index) {
-      movePage(dragSourceIndex, index);
+    if (dragState.docId === null) return;
+    saveHistory();
+    if (dragState.docId === docId) {
+      if (dragState.pageIndex !== index) {
+        movePageWithinDoc(docId, dragState.pageIndex, index);
+        renderAll();
+        renderThumbnailsProgressively();
+      }
+    } else {
+      movePageBetweenDocs(dragState.docId, dragState.pageIndex, docId, index);
       renderAll();
+      renderThumbnailsProgressively();
     }
   });
 
-  footer.querySelector('.btn-remove').addEventListener('click', () => {
-    removePage(page.id);
+  // ── Rotate button ─────────────────────────────────────────────────────────
+  footer.querySelector('.btn-rotate').addEventListener('click', e => {
+    e.stopPropagation();
+    saveHistory();
+    const doc = getDoc(docId);
+    const idx = doc.pages.findIndex(p => p.id === page.id);
+    if (idx === -1) return;
+    // Create new PageItem (preserve immutability contract for history snapshots)
+    const newPage = { ...page, rotation: (page.rotation + 90) % 360 };
+    doc.pages[idx] = newPage;
+    renderAll();
+    renderThumbnailsProgressively();
+  });
+
+  // ── Remove button ─────────────────────────────────────────────────────────
+  footer.querySelector('.btn-remove').addEventListener('click', e => {
+    e.stopPropagation();
+    saveHistory();
+    const doc = getDoc(docId);
+    doc.pages = doc.pages.filter(p => p.id !== page.id);
+    if (selectedPageId === page.id) selectedPageId = null;
     renderAll();
   });
 
   return card;
 }
 
-function updatePageCountLabel() {
-  pageCountLabel.textContent = `${pages.length} page${pages.length !== 1 ? 's' : ''} in working set`;
+// ---------------------------------------------------------------------------
+// Page mutations
+// ---------------------------------------------------------------------------
+
+function movePageWithinDoc(docId, fromIndex, toIndex) {
+  const doc = getDoc(docId);
+  const [item] = doc.pages.splice(fromIndex, 1);
+  doc.pages.splice(toIndex, 0, item);
 }
 
-function updateSplitInputBounds() {
-  const max = pages.length;
-  splitFrom.max = max;
-  splitTo.max = max;
-  if (+splitFrom.value > max) splitFrom.value = '';
-  if (+splitTo.value > max) splitTo.value = '';
+function movePageBetweenDocs(srcDocId, srcIndex, tgtDocId, tgtIndex) {
+  const src = getDoc(srcDocId);
+  const tgt = getDoc(tgtDocId);
+  const [item] = src.pages.splice(srcIndex, 1);
+  tgt.pages.splice(tgtIndex, 0, item);
 }
 
 // ---------------------------------------------------------------------------
-// State mutations
+// Selection
 // ---------------------------------------------------------------------------
 
-function removePage(id) {
-  pages = pages.filter(p => p.id !== id);
-  loadedDocs = loadedDocs.filter(doc => pages.some(p => p.sourceFileName === doc.name));
-}
-
-function movePage(fromIndex, toIndex) {
-  const [item] = pages.splice(fromIndex, 1);
-  pages.splice(toIndex, 0, item);
-}
-
-function handleClearAll() {
-  pages = [];
-  loadedDocs = [];
-  uploadZone.classList.remove('compact');
-  mainContent.classList.add('d-none');
-  thumbnailGrid.innerHTML = '';
-  fileList.innerHTML = '';
+function setSelectedPage(id) {
+  selectedPageId = id;
+  document.querySelectorAll('.thumb-card').forEach(c => {
+    c.classList.toggle('thumb-card--selected', id !== null && c.dataset.id === id);
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar handlers
+// Keyboard shortcuts
 // ---------------------------------------------------------------------------
 
-async function handleDownload() {
-  if (!pages.length) return;
-  setButtonBusy(btnDownload, 'Building…');
+function handleKeyDown(e) {
+  // Don't fire shortcuts when user is typing in an input
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  if (ctrl && !e.shiftKey && e.key.toLowerCase() === 'z') {
+    e.preventDefault(); undo(); return;
+  }
+  if (ctrl && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+    e.preventDefault(); redo(); return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    setSelectedPage(null);
+    hideContextMenu();
+    return;
+  }
+
+  if (!selectedPageId) return;
+
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault();
+    const loc = findPageLocation(selectedPageId);
+    if (!loc) return;
+    saveHistory();
+    getDoc(loc.docId).pages.splice(loc.index, 1);
+    selectedPageId = null;
+    renderAll();
+    return;
+  }
+
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    const loc = findPageLocation(selectedPageId);
+    if (!loc) return;
+    const doc = getDoc(loc.docId);
+    const newIndex = loc.index + (e.key === 'ArrowLeft' ? -1 : 1);
+    if (newIndex < 0 || newIndex >= doc.pages.length) return;
+    saveHistory();
+    movePageWithinDoc(loc.docId, loc.index, newIndex);
+    renderAll();
+    setSelectedPage(selectedPageId); // restore highlight after DOM rebuild
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+function showContextMenu(e, docId, pageIndex) {
+  e.preventDefault();
+  contextTarget = { docId, pageIndex };
+
+  // Populate "Move to…" section (only visible when multiple docs exist)
+  const otherDocs = documents.filter(d => d.id !== docId);
+  if (otherDocs.length > 0) {
+    contextMoveSection.classList.remove('d-none');
+    contextMoveTargets.innerHTML = '';
+    for (const d of otherDocs) {
+      const item = document.createElement('div');
+      item.className = 'context-menu-item context-menu-item--indent';
+      item.textContent = d.name;
+      item.addEventListener('click', ev => {
+        ev.stopPropagation();
+        saveHistory();
+        movePageBetweenDocs(docId, pageIndex, d.id, d.pages.length);
+        hideContextMenu();
+        renderAll();
+        renderThumbnailsProgressively();
+      });
+      contextMoveTargets.appendChild(item);
+    }
+  } else {
+    contextMoveSection.classList.add('d-none');
+  }
+
+  // Show menu, measure, then reposition clamped to viewport
+  contextMenu.classList.remove('d-none');
+  contextMenu.style.left = '0px';
+  contextMenu.style.top = '0px';
+  const rect = contextMenu.getBoundingClientRect();
+  const x = Math.min(e.clientX, window.innerWidth  - rect.width  - 8);
+  const y = Math.min(e.clientY, window.innerHeight - rect.height - 8);
+  contextMenu.style.left = `${Math.max(8, x)}px`;
+  contextMenu.style.top  = `${Math.max(8, y)}px`;
+}
+
+function hideContextMenu() {
+  contextMenu.classList.add('d-none');
+  contextTarget = null;
+}
+
+function handleContextAction(action) {
+  const { docId, pageIndex } = contextTarget;
+  const doc = getDoc(docId);
+  if (!doc || pageIndex < 0 || pageIndex >= doc.pages.length) {
+    hideContextMenu();
+    return;
+  }
+
+  saveHistory();
+
+  if (action === 'rotate') {
+    const p = doc.pages[pageIndex];
+    doc.pages[pageIndex] = { ...p, rotation: (p.rotation + 90) % 360 };
+  } else if (action === 'duplicate') {
+    const clone = { ...doc.pages[pageIndex], id: crypto.randomUUID() };
+    doc.pages.splice(pageIndex + 1, 0, clone);
+  } else if (action === 'remove') {
+    if (selectedPageId === doc.pages[pageIndex].id) selectedPageId = null;
+    doc.pages.splice(pageIndex, 1);
+  } else if (action === 'remove-before') {
+    doc.pages = doc.pages.slice(pageIndex);
+  } else if (action === 'remove-after') {
+    doc.pages = doc.pages.slice(0, pageIndex + 1);
+  }
+
+  hideContextMenu();
+  renderAll();
+  renderThumbnailsProgressively();
+}
+
+// ---------------------------------------------------------------------------
+// Per-document toolbar handlers
+// ---------------------------------------------------------------------------
+
+async function handleDocDownload(docId, btn) {
+  const doc = getDoc(docId);
+  if (!doc?.pages.length) { bsToast.show('No pages to download.', 'warning'); return; }
+  setButtonBusy(btn, 'Building…');
   try {
-    const bytes = await buildPdf(pages);
-    downloadPdf(bytes, 'pdfworker-output.pdf');
-    bsToast.show(`Downloaded ${pages.length}-page PDF.`, 'success');
+    const bytes = await buildPdf(doc.pages);
+    downloadPdf(bytes, `${safeFilename(doc.name)}.pdf`);
+    bsToast.show(`Downloaded ${doc.pages.length}-page PDF.`, 'success');
   } catch (err) {
     bsToast.show(`Error: ${err.message}`, 'danger');
   } finally {
-    restoreDownloadButton();
+    btn.disabled = false;
+    btn.innerHTML = `${DL_ICON}Download PDF`;
   }
 }
 
-async function handleSplitRange() {
-  const from = parseInt(splitFrom.value, 10);
-  const to   = parseInt(splitTo.value,   10);
-  if (isNaN(from) || isNaN(to)) { bsToast.show('Enter a page range first.', 'warning'); return; }
-  if (from < 1 || to > pages.length || from > to) {
-    bsToast.show(`Range must be between 1 and ${pages.length}.`, 'warning');
+async function handleDocBurst(docId, btn) {
+  const doc = getDoc(docId);
+  if (!doc?.pages.length) { bsToast.show('No pages to burst.', 'warning'); return; }
+  if (doc.pages.length > 20 && !confirm(
+    `This will download ${doc.pages.length} individual PDF files. Your browser may ask you to allow multiple downloads. Continue?`
+  )) return;
+
+  setButtonBusy(btn, 'Bursting…');
+  try {
+    const base = safeFilename(doc.name);
+    for (let i = 0; i < doc.pages.length; i++) {
+      const bytes = await buildPdf([doc.pages[i]]);
+      downloadPdf(bytes, `${base}-page-${String(i + 1).padStart(3, '0')}.pdf`);
+      if (i < doc.pages.length - 1) await delay(120);
+    }
+    bsToast.show(`Burst complete — ${doc.pages.length} files downloaded.`, 'success');
+  } catch (err) {
+    bsToast.show(`Error: ${err.message}`, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Burst';
+  }
+}
+
+async function handleDocZip(docId, btn) {
+  if (typeof fflate === 'undefined') {
+    bsToast.show('ZIP export unavailable (fflate library not loaded).', 'danger');
     return;
   }
-  setButtonBusy(btnSplit, 'Extracting…');
+  const doc = getDoc(docId);
+  if (!doc?.pages.length) { bsToast.show('No pages to ZIP.', 'warning'); return; }
+
+  setButtonBusy(btn, 'Building…');
+  bsToast.show(`Packaging ${doc.pages.length} pages…`, 'secondary');
+
   try {
-    const bytes = await buildPdf(pages.slice(from - 1, to));
-    downloadPdf(bytes, `pdfworker-pages-${from}-to-${to}.pdf`);
+    const base = safeFilename(doc.name);
+    const files = {};
+    for (let i = 0; i < doc.pages.length; i++) {
+      const bytes = await buildPdf([doc.pages[i]]);
+      files[`page-${String(i + 1).padStart(3, '0')}.pdf`] = bytes;
+    }
+
+    await new Promise((resolve, reject) => {
+      // level: 0 = store only — PDFs are already compressed internally
+      fflate.zip(files, { level: 0 }, (err, data) => {
+        if (err) { reject(err); return; }
+        downloadBlob(new Blob([data], { type: 'application/zip' }), `${base}-pages.zip`);
+        resolve();
+      });
+    });
+
+    bsToast.show(`Downloaded ${doc.pages.length}-page ZIP.`, 'success');
+  } catch (err) {
+    bsToast.show(`ZIP error: ${err.message}`, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'ZIP';
+  }
+}
+
+async function handleDocSplitRange(docId, fromInput, toInput, btn) {
+  const doc = getDoc(docId);
+  if (!doc) return;
+  const from = parseInt(fromInput.value, 10);
+  const to   = parseInt(toInput.value,   10);
+  if (isNaN(from) || isNaN(to)) { bsToast.show('Enter a page range first.', 'warning'); return; }
+  if (from < 1 || to > doc.pages.length || from > to) {
+    bsToast.show(`Range must be between 1 and ${doc.pages.length}.`, 'warning');
+    return;
+  }
+  setButtonBusy(btn, 'Extracting…');
+  try {
+    const bytes = await buildPdf(doc.pages.slice(from - 1, to));
+    downloadPdf(bytes, `${safeFilename(doc.name)}-pages-${from}-to-${to}.pdf`);
     bsToast.show(`Extracted pages ${from}–${to}.`, 'success');
   } catch (err) {
     bsToast.show(`Error: ${err.message}`, 'danger');
   } finally {
-    btnSplit.disabled = false;
-    btnSplit.textContent = 'Extract';
-  }
-}
-
-async function handleBurst() {
-  if (!pages.length) return;
-  if (pages.length > 20 && !confirm(
-    `This will download ${pages.length} individual PDF files. Your browser may ask you to allow multiple downloads. Continue?`
-  )) return;
-
-  setButtonBusy(btnBurst, 'Bursting…');
-  try {
-    for (let i = 0; i < pages.length; i++) {
-      const bytes = await buildPdf([pages[i]]);
-      downloadPdf(bytes, `pdfworker-page-${String(i + 1).padStart(3, '0')}.pdf`);
-      if (i < pages.length - 1) await delay(120);
-    }
-    bsToast.show(`Burst complete — ${pages.length} files downloaded.`, 'success');
-  } catch (err) {
-    bsToast.show(`Error: ${err.message}`, 'danger');
-  } finally {
-    btnBurst.disabled = false;
-    btnBurst.textContent = 'Burst (1 PDF/page)';
+    btn.disabled = false;
+    btn.textContent = 'Extract';
   }
 }
 
 // ---------------------------------------------------------------------------
-// Utilities
+// Global toolbar handlers
 // ---------------------------------------------------------------------------
 
-function setButtonBusy(btn, label) {
-  btn.disabled = true;
-  btn.textContent = label;
-}
-
-function restoreDownloadButton() {
-  btnDownload.disabled = false;
-  btnDownload.innerHTML = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
-      <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-      <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-    </svg>
-    Download PDF`;
-}
-
-function escHtml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function handleClearAll() {
+  if (!documents.length) return;
+  if (!confirm('Clear all documents and pages? This cannot be undone.')) return;
+  documents = [];
+  activeDocId = null;
+  selectedPageId = null;
+  history = [[]];
+  historyIndex = 0;
+  renderAll();
 }
