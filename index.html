@@ -16,7 +16,16 @@
       <img src="favicon.svg" width="20" height="20" alt="" />
       PdfWorker
     </span>
-    <span class="text-secondary small">All processing happens in your browser — nothing is uploaded anywhere.</span>
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-secondary small d-none d-sm-inline">All processing happens in your browser — nothing is uploaded anywhere.</span>
+      <button id="btn-help" class="btn btn-outline-light btn-sm" title="Help &amp; Features">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+          <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+          <path d="M5.255 5.786a.237.237 0 0 0 .241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 0 0 .25.246h.811a.25.25 0 0 0 .25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/>
+        </svg>
+        Help
+      </button>
+    </div>
   </nav>
 
   <div class="container-fluid py-3 px-3">
@@ -32,6 +41,76 @@
         <div><strong>Drop PDF files here</strong> or click to browse</div>
         <div class="text-secondary small mt-1">Supports multiple files &bull; All processing is local</div>
       </label>
+    </div>
+
+    <!-- Welcome panel (shown before any PDF is loaded) -->
+    <div id="welcome-panel" class="welcome-panel mb-3">
+      <div class="welcome-panel-hero">
+        <img src="favicon.svg" width="40" height="40" alt="" class="welcome-icon" />
+        <div>
+          <h4 class="mb-1">Welcome to PdfWorker</h4>
+          <p class="text-secondary mb-0">A free, private PDF toolkit that runs entirely in your browser. Your files never leave your device.</p>
+        </div>
+      </div>
+      <div class="welcome-features">
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128196;</div>
+          <div>
+            <strong>Merge &amp; Reorder</strong>
+            <div class="text-secondary small">Combine multiple PDFs into one. Drag pages between documents or reorder them freely.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#9986;</div>
+          <div>
+            <strong>Split &amp; Extract</strong>
+            <div class="text-secondary small">Extract a page range from any document to create a separate PDF.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128260;</div>
+          <div>
+            <strong>Rotate Pages</strong>
+            <div class="text-secondary small">Rotate individual pages or selections 90° at a time with one click.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128269;</div>
+          <div>
+            <strong>Preview</strong>
+            <div class="text-secondary small">Preview any document at full size before downloading.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128273;</div>
+          <div>
+            <strong>Encrypted PDFs</strong>
+            <div class="text-secondary small">Open password-protected PDFs — just enter the password when prompted.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128203;</div>
+          <div>
+            <strong>Edit Metadata</strong>
+            <div class="text-secondary small">Set the title, author, and subject before downloading your finished PDF.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#8617;</div>
+          <div>
+            <strong>Undo / Redo</strong>
+            <div class="text-secondary small">Full undo/redo history so you can experiment without worry. Supports Ctrl+Z / Ctrl+Y.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128274;</div>
+          <div>
+            <strong>100% Private</strong>
+            <div class="text-secondary small">Everything runs locally — no uploads, no accounts, no tracking.</div>
+          </div>
+        </div>
+      </div>
+      <p class="welcome-tip">Drop one or more PDF files above (or click the upload area) to get started.</p>
     </div>
 
     <!-- Main content (shown once at least one document exists) -->
@@ -135,6 +214,89 @@
       <button id="previewCloseBtn" class="btn-close" aria-label="Close"></button>
     </div>
     <iframe id="previewFrame" src=""></iframe>
+  </dialog>
+
+  <!-- Help / Features dialog -->
+  <dialog id="helpDialog" aria-labelledby="helpDialogTitle">
+    <div class="pwdialog-header">
+      <span id="helpDialogTitle">PdfWorker — Features &amp; Help</span>
+      <button id="helpCloseBtn" class="btn-close" aria-label="Close"></button>
+    </div>
+    <div class="help-dialog-body">
+      <p class="text-secondary small mb-3">Everything runs in your browser. Your files are never uploaded anywhere.</p>
+      <div class="help-features-grid">
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128196;</div>
+          <div>
+            <strong>Merge &amp; Reorder</strong>
+            <div class="text-secondary small">Combine multiple PDFs. Drag pages between documents or reorder them freely.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#9986;</div>
+          <div>
+            <strong>Split &amp; Extract</strong>
+            <div class="text-secondary small">Use the Split range control on any document to extract a page range as a new PDF.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128260;</div>
+          <div>
+            <strong>Rotate Pages</strong>
+            <div class="text-secondary small">Click the rotate button on a thumbnail, or right-click for the context menu.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128269;</div>
+          <div>
+            <strong>Preview</strong>
+            <div class="text-secondary small">Use the Preview button on any document to view it at full size.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128273;</div>
+          <div>
+            <strong>Encrypted PDFs</strong>
+            <div class="text-secondary small">Open password-protected PDFs — enter the password when prompted on load.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128203;</div>
+          <div>
+            <strong>Edit Metadata</strong>
+            <div class="text-secondary small">Set title, author, and subject via the dialog shown before downloading.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#8617;</div>
+          <div>
+            <strong>Undo / Redo</strong>
+            <div class="text-secondary small">Full history in the toolbar. Keyboard: Ctrl+Z to undo, Ctrl+Y / Ctrl+Shift+Z to redo.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128070;</div>
+          <div>
+            <strong>Drag &amp; Drop</strong>
+            <div class="text-secondary small">Drop PDFs onto the upload area or directly onto a document's page grid.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128247;</div>
+          <div>
+            <strong>Multi-select</strong>
+            <div class="text-secondary small">Click pages to select them; Shift+click for ranges; right-click for bulk actions.</div>
+          </div>
+        </div>
+        <div class="welcome-feature">
+          <div class="welcome-feature-icon">&#128274;</div>
+          <div>
+            <strong>100% Private</strong>
+            <div class="text-secondary small">No uploads, no accounts, no tracking. Processing is entirely local.</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </dialog>
 
   <!-- Load pdf-lib, PDF.js, fflate, then app.js -->

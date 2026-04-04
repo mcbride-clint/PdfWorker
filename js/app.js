@@ -60,10 +60,11 @@ const DL_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" 
 // DOM refs (resolved on DOMContentLoaded)
 // ---------------------------------------------------------------------------
 
-let uploadZone, fileInput, mainContent, documentsContainer;
-let btnAddPdfs, btnNewDoc, btnUndo, btnRedo, btnClearAll;
+let uploadZone, fileInput, mainContent, documentsContainer, welcomePanel;
+let btnAddPdfs, btnNewDoc, btnUndo, btnRedo, btnClearAll, btnHelp;
 let toastEl, toastMsg, bsToast;
 let contextMenu, contextMoveSection, contextMoveTargets;
+let helpDialog;
 
 /** @type {IDBDatabase|null} IndexedDB handle (null if unavailable) */
 let db = null;
@@ -77,16 +78,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   fileInput          = document.getElementById('file-input');
   mainContent        = document.getElementById('main-content');
   documentsContainer = document.getElementById('documents-container');
+  welcomePanel       = document.getElementById('welcome-panel');
   btnAddPdfs         = document.getElementById('btn-add-pdfs');
   btnNewDoc          = document.getElementById('btn-new-doc');
   btnUndo            = document.getElementById('btn-undo');
   btnRedo            = document.getElementById('btn-redo');
   btnClearAll        = document.getElementById('btn-clear-all');
+  btnHelp            = document.getElementById('btn-help');
   toastEl            = document.getElementById('toast');
   toastMsg           = document.getElementById('toast-msg');
   contextMenu        = document.getElementById('context-menu');
   contextMoveSection = document.getElementById('context-menu-move-section');
   contextMoveTargets = document.getElementById('context-menu-move-targets');
+  helpDialog         = document.getElementById('helpDialog');
+
+  btnHelp.addEventListener('click', () => helpDialog.showModal());
+  document.getElementById('helpCloseBtn').addEventListener('click', () => helpDialog.close());
+  helpDialog.addEventListener('click', e => { if (e.target === helpDialog) helpDialog.close(); });
 
   bsToast = {
     show(msg, variant = 'secondary') {
@@ -523,6 +531,7 @@ function renderAll() {
   const hasContent = documents.length > 0;
   uploadZone.classList.toggle('compact', hasContent);
   mainContent.classList.toggle('d-none', !hasContent);
+  welcomePanel.classList.toggle('d-none', hasContent);
 
   documentsContainer.innerHTML = '';
   for (const doc of documents) {
