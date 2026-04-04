@@ -85,6 +85,15 @@
     </div>
   </div>
 
+  <!-- PDF Preview Dialog -->
+  <dialog id="previewDialog">
+    <div id="previewDialogHeader">
+      <span id="previewModalLabel"></span>
+      <button id="previewCloseBtn" class="btn-close" aria-label="Close"></button>
+    </div>
+    <iframe id="previewFrame" src=""></iframe>
+  </dialog>
+
   <!-- Load pdf-lib, PDF.js, fflate, then app.js -->
   <script src="js/pdf-lib.min.js"></script>
   <script src="js/pdf.min.js"></script>

@@ -112,6 +112,17 @@ document.addEventListener('DOMContentLoaded', () => {
   btnRedo.addEventListener('click', redo);
   btnClearAll.addEventListener('click', handleClearAll);
 
+  // Preview dialog — revoke blob URL on close to free memory
+  const previewDialog = document.getElementById('previewDialog');
+  const closePreview = () => {
+    const frame = document.getElementById('previewFrame');
+    URL.revokeObjectURL(frame.src);
+    frame.src = '';
+    previewDialog.close();
+  };
+  document.getElementById('previewCloseBtn').addEventListener('click', closePreview);
+  previewDialog.addEventListener('cancel', closePreview);
+
   // Context menu — hide on outside click or scroll
   document.addEventListener('click', e => {
     if (!contextMenu.contains(e.target)) hideContextMenu();
@@ -357,6 +368,23 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+/** Open the assembled PDF in a preview modal (uses the browser's native viewer). */
+async function previewDoc(docId) {
+  const doc = getDoc(docId);
+  if (!doc || doc.pages.length === 0) return;
+  bsToast.show('Building preview…', 'secondary');
+  try {
+    const bytes = await buildPdf(doc.pages);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    document.getElementById('previewModalLabel').textContent = doc.name || 'Preview';
+    document.getElementById('previewFrame').src = url;
+    document.getElementById('previewDialog').showModal();
+  } catch (e) {
+    bsToast.show('Preview failed: ' + e.message, 'danger');
+  }
+}
+
 /** Sanitise a doc name for use in filenames. */
 function safeFilename(name) {
   return name.replace(/\.pdf$/i, '').replace(/[/\\?%*:|"<>]/g, '-') || 'pdfworker';
@@ -491,6 +519,16 @@ function createDocPane(doc) {
     handleDocDownload(doc.id, btnDownload);
   });
 
+  // Preview button
+  const btnPreview = document.createElement('button');
+  btnPreview.className = 'btn btn-outline-secondary btn-sm';
+  btnPreview.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8zM1.173 8a13.133 13.133 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5c2.12 0 3.879 1.168 5.168 2.457A13.133 13.133 0 0 1 14.828 8c-.058.087-.122.183-.195.288-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5c-2.12 0-3.879-1.168-5.168-2.457A13.134 13.134 0 0 1 1.172 8z"/><path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0z"/></svg>Preview`;
+  btnPreview.title = 'Preview this document as a PDF';
+  btnPreview.addEventListener('click', e => {
+    e.stopPropagation();
+    previewDoc(doc.id);
+  });
+
   // Burst button
   const btnBurst = document.createElement('button');
   btnBurst.className = 'btn btn-outline-secondary btn-sm';
@@ -568,6 +606,7 @@ function createDocPane(doc) {
 
   header.appendChild(nameInput);
   header.appendChild(btnDownload);
+  header.appendChild(btnPreview);
   header.appendChild(btnBurst);
   header.appendChild(btnZip);
   header.appendChild(btnSplitToggle);

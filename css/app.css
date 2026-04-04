@@ -418,6 +418,38 @@ body {
    Responsive tweaks
    ============================================================ */
 
+/* Preview dialog */
+#previewDialog {
+  width: min(90vw, 1140px);
+  height: 90vh;
+  padding: 0;
+  border: none;
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 2rem rgba(0,0,0,.4);
+  overflow: hidden;
+}
+#previewDialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+#previewDialog::backdrop {
+  background: rgba(0,0,0,.5);
+}
+#previewDialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--bs-border-color, #dee2e6);
+  flex-shrink: 0;
+}
+#previewDialog iframe {
+  flex: 1;
+  width: 100%;
+  border: none;
+  min-height: 0;
+}
+
 @media (max-width: 576px) {
   .split-input {
     width: 4rem !important;
