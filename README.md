@@ -1,10 +1,8 @@
 # PdfWorker
 
-[![Deploy to GitHub Pages](https://github.com/USERNAME/PdfWorker/actions/workflows/deploy.yml/badge.svg)](https://github.com/USERNAME/PdfWorker/actions/workflows/deploy.yml)
+[![Deploy to GitHub Pages](https://github.com/USERNAME/PdfWorker/actions/workflows/deploy.yml/badge.svg)](https://github.com/mcbride-clint/PdfWorker/actions/workflows/deploy.yml)
 
-**Live demo:** https://USERNAME.github.io/PdfWorker/
-
-> Replace `USERNAME` above with your GitHub username after you push the repository.
+**Live demo:** https://mcbride-clint.github.io/PdfWorker/
 
 ---
 
