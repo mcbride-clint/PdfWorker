@@ -18,23 +18,27 @@ PdfWorker is a free, privacy-first PDF tool that runs entirely inside your web b
 
 ### Core Operations
 - **Upload** — Drop or browse for one or more PDF files; drag PDFs directly onto any document's page grid
+- **Encrypted PDFs** — Password-protected files prompt for a password on load; wrong passwords can be retried or the file skipped
 - **Multiple Documents** — Work on several PDFs simultaneously, each in its own named pane; download them independently
 - **Reorder** — Drag-and-drop page thumbnails to rearrange within a document, or drag pages between documents
 - **Rotate** — Click ↻ on any page thumbnail to rotate it 90° clockwise; applies correctly to the downloaded PDF
 - **Remove** — Click × on any page thumbnail to delete it; or use the right-click menu for bulk removal
 - **Duplicate** — Clone any page via the right-click context menu
-- **Undo / Redo** — Up to 50 undo/redo steps for all page operations (Ctrl+Z / Ctrl+Y)
+- **Multi-select** — Ctrl+click to toggle individual pages, Shift+click to select a range; then rotate or delete all selected pages at once
+- **Undo / Redo** — Up to 50 undo/redo steps for all page operations, including multi-page deletions (Ctrl+Z / Ctrl+Y)
 
 ### Download Options
 - **Merge & Download** — Download all pages in a document as a single merged PDF
 - **Split (range)** — Extract a start–end page range as a new PDF
 - **Burst** — Save every page as its own individual PDF file
 - **ZIP** — Package all pages as individual PDFs inside a single ZIP archive (no sequential browser downloads needed)
+- **PDF Metadata** — Set title, author, and subject before any download (Merge, ZIP, Split range)
 
 ### Productivity
 - **Keyboard shortcuts** — Navigate and edit without touching the mouse (see table below)
-- **Right-click context menu** — Rotate, duplicate, remove, bulk-remove before/after, or move a page to another document
+- **Right-click context menu** — Rotate, duplicate, remove, bulk-remove before/after, or move a page to another document; actions apply to all selected pages when multiple are selected
 - **Inline document naming** — Click the document title to rename it; the name is used in downloaded filenames
+- **Session persistence** — Your work is saved automatically in the browser (IndexedDB) and restored when you reopen the page; use **Clear All** to start fresh
 
 ---
 
@@ -44,11 +48,13 @@ PdfWorker is a free, privacy-first PDF tool that runs entirely inside your web b
 |---|---|
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
-| `Delete` or `Backspace` | Remove the selected page |
-| `←` / `→` | Move the selected page left / right within its document |
-| `Escape` | Deselect current page / close context menu |
+| `Delete` or `Backspace` | Remove the selected page(s) |
+| `←` / `→` | Move the selected page left / right within its document (single selection only) |
+| `Escape` | Deselect all pages / close context menu |
+| `Ctrl+click` | Toggle a page in/out of the selection |
+| `Shift+click` | Extend the selection to a range within the same document |
 
-> Click a page thumbnail to select it before using keyboard shortcuts. Shortcuts are disabled when a text input is focused.
+> Click a page thumbnail to select it. Multi-select with Ctrl/Shift+click, then use Delete or the right-click menu to operate on all selected pages at once. Shortcuts are disabled when a text input is focused.
 
 ---
 
@@ -131,11 +137,10 @@ Requires a modern browser with ES2020 module support and WebAssembly (used inter
 
 ## Known Limitations
 
-- **Encrypted PDFs** — Password-protected PDFs are not supported and will show an error on load.
 - **Burst downloads** — Saving each page as its own file triggers multiple browser downloads. Your browser may ask you to allow multiple file downloads. Consider using **ZIP** instead to avoid this.
 - **ZIP memory** — The ZIP export holds all pages as Uint8Arrays in memory simultaneously before packaging. Very large documents (100+ pages, large file sizes) may be slow or cause memory pressure; use Burst in that case.
 - **Very large files** — PDFs over ~100 MB may be slow to process depending on your device.
-- **No persistence** — The working state is not saved between page reloads.
+- **Session storage limits** — IndexedDB storage quotas vary by browser and device. Very large sessions (many high-resolution PDFs) may not be fully persisted.
 
 ---
 

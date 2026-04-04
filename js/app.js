@@ -38,8 +38,11 @@ let activeDocId = null;
 /** @type {{docId:string|null, pageIndex:number}} */
 let dragState = { docId: null, pageIndex: -1 };
 
-/** @type {string|null} */
-let selectedPageId = null;
+/** @type {Set<string>} */
+let selectedPageIds = new Set();
+
+/** @type {string|null} Last clicked page id — anchor for Shift+click range selection. */
+let lastSelectedId = null;
 
 /** @type {{docId:string, pageIndex:number}|null} */
 let contextTarget = null;
@@ -62,11 +65,14 @@ let btnAddPdfs, btnNewDoc, btnUndo, btnRedo, btnClearAll;
 let toastEl, toastMsg, bsToast;
 let contextMenu, contextMoveSection, contextMoveTargets;
 
+/** @type {IDBDatabase|null} IndexedDB handle (null if unavailable) */
+let db = null;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   uploadZone         = document.getElementById('upload-zone');
   fileInput          = document.getElementById('file-input');
   mainContent        = document.getElementById('main-content');
@@ -89,6 +95,10 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => toastEl.classList.remove('show'), 3500);
     }
   };
+
+  // IndexedDB — restore previous session
+  db = await openDb().catch(err => { console.warn('IndexedDB unavailable:', err); return null; });
+  if (db) await restoreState().catch(console.error);
 
   // Upload zone
   fileInput.addEventListener('change', () => {
@@ -194,6 +204,7 @@ function saveHistory() {
   if (history.length > HISTORY_LIMIT) history.shift();
   else historyIndex++;
   updateUndoRedoButtons();
+  persistState().catch(console.error);
 }
 
 function undo() {
@@ -216,6 +227,7 @@ function restoreFromHistory() {
   renderAll();
   renderThumbnailsProgressively();
   updateUndoRedoButtons();
+  persistState().catch(console.error);
 }
 
 function updateUndoRedoButtons() {
@@ -239,9 +251,9 @@ function createDoc(name = null) {
 }
 
 function handleNewDoc() {
-  saveHistory();
   const doc = createDoc();
   activeDocId = doc.id;
+  saveHistory();
   renderAll();
 }
 
@@ -249,10 +261,12 @@ function removeDoc(docId) {
   const doc = getDoc(docId);
   if (!doc) return;
   if (doc.pages.length > 0 && !confirm(`Remove "${doc.name}" and all its pages?`)) return;
-  saveHistory();
   documents = documents.filter(d => d.id !== docId);
   if (activeDocId === docId) activeDocId = documents[0]?.id ?? null;
-  if (selectedPageId && !findPageLocation(selectedPageId)) selectedPageId = null;
+  for (const id of [...selectedPageIds]) {
+    if (!findPageLocation(id)) selectedPageIds.delete(id);
+  }
+  saveHistory();
   renderAll();
 }
 
@@ -285,15 +299,42 @@ async function handleFiles(fileList_, targetDocId = null) {
     activeDocId = doc.id;
   }
 
-  saveHistory();
-
   for (const file of files) {
     try {
       const blob = new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
       const countBytes = new Uint8Array(await blob.arrayBuffer());
-      const tempDoc = await PDFLib.PDFDocument.load(countBytes, { ignoreEncryption: true });
-      const pageCount = tempDoc.getPageCount();
 
+      // Try loading without a password first
+      let tempDoc;
+      try {
+        tempDoc = await PDFLib.PDFDocument.load(countBytes);
+      } catch (loadErr) {
+        const isEncrypted = /encrypt|password/i.test(loadErr.message);
+        if (!isEncrypted) throw loadErr;
+
+        // Prompt for password, retrying until correct or user skips
+        let unlocked = false;
+        while (!unlocked) {
+          let password;
+          try {
+            password = await promptForPassword(file.name);
+          } catch {
+            // User skipped the file
+            bsToast.show(`Skipped "${file.name}".`, 'warning');
+            break;
+          }
+          try {
+            tempDoc = await PDFLib.PDFDocument.load(countBytes, { password });
+            unlocked = true;
+          } catch {
+            // Wrong password — show error indicator before the dialog re-opens next iteration
+            document.getElementById('passwordError').style.display = '';
+          }
+        }
+        if (!unlocked) continue;
+      }
+
+      const pageCount = tempDoc.getPageCount();
       for (let i = 0; i < pageCount; i++) {
         doc.pages.push({
           id: crypto.randomUUID(),
@@ -310,6 +351,7 @@ async function handleFiles(fileList_, targetDocId = null) {
   }
 
   fileInput.value = '';
+  saveHistory();
   renderAll();
   renderThumbnailsProgressively();
 }
@@ -329,10 +371,16 @@ async function loadDocFromBlob(blob) {
  * Caches source PDFDocuments by Blob to avoid re-parsing.
  * Applies per-page rotation via pdf-lib.
  * @param {PageItem[]} subset
+ * @param {{ title?: string, author?: string, subject?: string }} [meta]
  * @returns {Promise<Uint8Array>}
  */
-async function buildPdf(subset) {
+async function buildPdf(subset, meta = {}) {
   const result = await PDFLib.PDFDocument.create();
+  if (meta.title)   result.setTitle(meta.title);
+  if (meta.author)  result.setAuthor(meta.author);
+  if (meta.subject) result.setSubject(meta.subject);
+  result.setProducer('PdfWorker');
+  result.setCreationDate(new Date());
   const srcCache = new Map();
 
   for (const p of subset) {
@@ -482,7 +530,7 @@ function renderAll() {
   }
 
   // Restore selection highlight after DOM rebuild
-  setSelectedPage(selectedPageId);
+  updateSelectionUI();
   updateUndoRedoButtons();
 }
 
@@ -653,8 +701,8 @@ function createDocPane(doc) {
       // Page dropped on empty grid area — append to end of this doc
       e.preventDefault();
       if (dragState.docId === doc.id) return; // same doc no-op
-      saveHistory();
       movePageBetweenDocs(dragState.docId, dragState.pageIndex, doc.id, doc.pages.length);
+      saveHistory();
       renderAll();
       renderThumbnailsProgressively();
     }
@@ -669,7 +717,7 @@ function createDocPane(doc) {
 function createCard(page, index, docId) {
   const card = document.createElement('div');
   card.className = 'thumb-card';
-  if (page.id === selectedPageId) card.classList.add('thumb-card--selected');
+  if (selectedPageIds.has(page.id)) card.classList.add('thumb-card--selected');
   card.setAttribute('draggable', 'true');
   card.dataset.index = index;
   card.dataset.id = page.id;
@@ -711,7 +759,32 @@ function createCard(page, index, docId) {
   // ── Click to select ──────────────────────────────────────────────────────
   card.addEventListener('click', e => {
     if (e.target.closest('button')) return;
-    setSelectedPage(page.id);
+    if (e.ctrlKey || e.metaKey) {
+      // Toggle individual page
+      if (selectedPageIds.has(page.id)) selectedPageIds.delete(page.id);
+      else selectedPageIds.add(page.id);
+      lastSelectedId = page.id;
+    } else if (e.shiftKey && lastSelectedId) {
+      // Range select within the same document
+      const doc = getDoc(docId);
+      const ids = doc.pages.map(p => p.id);
+      const a = ids.indexOf(lastSelectedId);
+      const b = ids.indexOf(page.id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = [Math.min(a, b), Math.max(a, b)];
+        ids.slice(lo, hi + 1).forEach(id => selectedPageIds.add(id));
+      } else {
+        selectedPageIds.clear();
+        selectedPageIds.add(page.id);
+        lastSelectedId = page.id;
+      }
+    } else {
+      // Plain click — single select
+      selectedPageIds.clear();
+      selectedPageIds.add(page.id);
+      lastSelectedId = page.id;
+    }
+    updateSelectionUI();
   });
 
   // ── Context menu ─────────────────────────────────────────────────────────
@@ -746,15 +819,16 @@ function createCard(page, index, docId) {
     e.stopPropagation(); // prevent grid drop handler from also firing
     card.classList.remove('drag-over-card');
     if (dragState.docId === null) return;
-    saveHistory();
     if (dragState.docId === docId) {
       if (dragState.pageIndex !== index) {
         movePageWithinDoc(docId, dragState.pageIndex, index);
+        saveHistory();
         renderAll();
         renderThumbnailsProgressively();
       }
     } else {
       movePageBetweenDocs(dragState.docId, dragState.pageIndex, docId, index);
+      saveHistory();
       renderAll();
       renderThumbnailsProgressively();
     }
@@ -763,13 +837,13 @@ function createCard(page, index, docId) {
   // ── Rotate button ─────────────────────────────────────────────────────────
   footer.querySelector('.btn-rotate').addEventListener('click', e => {
     e.stopPropagation();
-    saveHistory();
     const doc = getDoc(docId);
     const idx = doc.pages.findIndex(p => p.id === page.id);
     if (idx === -1) return;
     // Create new PageItem (preserve immutability contract for history snapshots)
     const newPage = { ...page, rotation: (page.rotation + 90) % 360 };
     doc.pages[idx] = newPage;
+    saveHistory();
     renderAll();
     renderThumbnailsProgressively();
   });
@@ -777,10 +851,10 @@ function createCard(page, index, docId) {
   // ── Remove button ─────────────────────────────────────────────────────────
   footer.querySelector('.btn-remove').addEventListener('click', e => {
     e.stopPropagation();
-    saveHistory();
     const doc = getDoc(docId);
     doc.pages = doc.pages.filter(p => p.id !== page.id);
-    if (selectedPageId === page.id) selectedPageId = null;
+    selectedPageIds.delete(page.id);
+    saveHistory();
     renderAll();
   });
 
@@ -808,10 +882,9 @@ function movePageBetweenDocs(srcDocId, srcIndex, tgtDocId, tgtIndex) {
 // Selection
 // ---------------------------------------------------------------------------
 
-function setSelectedPage(id) {
-  selectedPageId = id;
+function updateSelectionUI() {
   document.querySelectorAll('.thumb-card').forEach(c => {
-    c.classList.toggle('thumb-card--selected', id !== null && c.dataset.id === id);
+    c.classList.toggle('thumb-card--selected', selectedPageIds.has(c.dataset.id));
   });
 }
 
@@ -834,35 +907,41 @@ function handleKeyDown(e) {
   }
   if (e.key === 'Escape') {
     e.preventDefault();
-    setSelectedPage(null);
+    selectedPageIds.clear();
+    lastSelectedId = null;
+    updateSelectionUI();
     hideContextMenu();
     return;
   }
 
-  if (!selectedPageId) return;
+  if (selectedPageIds.size === 0) return;
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
-    const loc = findPageLocation(selectedPageId);
-    if (!loc) return;
+    for (const doc of documents) {
+      doc.pages = doc.pages.filter(p => !selectedPageIds.has(p.id));
+    }
+    selectedPageIds.clear();
+    lastSelectedId = null;
     saveHistory();
-    getDoc(loc.docId).pages.splice(loc.index, 1);
-    selectedPageId = null;
     renderAll();
     return;
   }
 
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // Arrow-move only applies to a single-page selection
+    if (selectedPageIds.size !== 1) return;
+    const [selectedPageId] = selectedPageIds;
     e.preventDefault();
     const loc = findPageLocation(selectedPageId);
     if (!loc) return;
     const doc = getDoc(loc.docId);
     const newIndex = loc.index + (e.key === 'ArrowLeft' ? -1 : 1);
     if (newIndex < 0 || newIndex >= doc.pages.length) return;
-    saveHistory();
     movePageWithinDoc(loc.docId, loc.index, newIndex);
+    saveHistory();
     renderAll();
-    setSelectedPage(selectedPageId); // restore highlight after DOM rebuild
+    updateSelectionUI(); // restore highlight after DOM rebuild
   }
 }
 
@@ -873,6 +952,15 @@ function handleKeyDown(e) {
 function showContextMenu(e, docId, pageIndex) {
   e.preventDefault();
   contextTarget = { docId, pageIndex };
+
+  // Update labels to reflect multi-select when the right-clicked page is in the selection
+  const doc = getDoc(docId);
+  const contextPageId = doc?.pages[pageIndex]?.id;
+  const multiAffected = contextPageId && selectedPageIds.has(contextPageId) && selectedPageIds.size > 1;
+  contextMenu.querySelector('[data-action="rotate"]').textContent =
+    multiAffected ? `Rotate ${selectedPageIds.size} pages 90° clockwise` : 'Rotate 90° clockwise';
+  contextMenu.querySelector('[data-action="remove"]').textContent =
+    multiAffected ? `Remove ${selectedPageIds.size} selected pages` : 'Remove page';
 
   // Populate "Move to…" section (only visible when multiple docs exist)
   const otherDocs = documents.filter(d => d.id !== docId);
@@ -885,8 +973,8 @@ function showContextMenu(e, docId, pageIndex) {
       item.textContent = d.name;
       item.addEventListener('click', ev => {
         ev.stopPropagation();
-        saveHistory();
         movePageBetweenDocs(docId, pageIndex, d.id, d.pages.length);
+        saveHistory();
         hideContextMenu();
         renderAll();
         renderThumbnailsProgressively();
@@ -921,23 +1009,43 @@ function handleContextAction(action) {
     return;
   }
 
-  saveHistory();
+  const contextPageId = doc.pages[pageIndex].id;
+  const multiAffected = selectedPageIds.has(contextPageId) && selectedPageIds.size > 1;
 
   if (action === 'rotate') {
-    const p = doc.pages[pageIndex];
-    doc.pages[pageIndex] = { ...p, rotation: (p.rotation + 90) % 360 };
+    if (multiAffected) {
+      // Rotate all selected pages across all documents
+      for (const d of documents) {
+        d.pages = d.pages.map(p =>
+          selectedPageIds.has(p.id) ? { ...p, rotation: (p.rotation + 90) % 360 } : p
+        );
+      }
+    } else {
+      const p = doc.pages[pageIndex];
+      doc.pages[pageIndex] = { ...p, rotation: (p.rotation + 90) % 360 };
+    }
   } else if (action === 'duplicate') {
     const clone = { ...doc.pages[pageIndex], id: crypto.randomUUID() };
     doc.pages.splice(pageIndex + 1, 0, clone);
   } else if (action === 'remove') {
-    if (selectedPageId === doc.pages[pageIndex].id) selectedPageId = null;
-    doc.pages.splice(pageIndex, 1);
+    if (multiAffected) {
+      // Remove all selected pages across all documents
+      for (const d of documents) {
+        d.pages = d.pages.filter(p => !selectedPageIds.has(p.id));
+      }
+      selectedPageIds.clear();
+      lastSelectedId = null;
+    } else {
+      selectedPageIds.delete(contextPageId);
+      doc.pages.splice(pageIndex, 1);
+    }
   } else if (action === 'remove-before') {
     doc.pages = doc.pages.slice(pageIndex);
   } else if (action === 'remove-after') {
     doc.pages = doc.pages.slice(0, pageIndex + 1);
   }
 
+  saveHistory();
   hideContextMenu();
   renderAll();
   renderThumbnailsProgressively();
@@ -950,9 +1058,15 @@ function handleContextAction(action) {
 async function handleDocDownload(docId, btn) {
   const doc = getDoc(docId);
   if (!doc?.pages.length) { bsToast.show('No pages to download.', 'warning'); return; }
+  let meta;
+  try {
+    meta = await promptForMetadata({ title: doc.name });
+  } catch {
+    return; // user cancelled
+  }
   setButtonBusy(btn, 'Building…');
   try {
-    const bytes = await buildPdf(doc.pages);
+    const bytes = await buildPdf(doc.pages, meta);
     downloadPdf(bytes, `${safeFilename(doc.name)}.pdf`);
     bsToast.show(`Downloaded ${doc.pages.length}-page PDF.`, 'success');
   } catch (err) {
@@ -995,6 +1109,13 @@ async function handleDocZip(docId, btn) {
   const doc = getDoc(docId);
   if (!doc?.pages.length) { bsToast.show('No pages to ZIP.', 'warning'); return; }
 
+  let meta;
+  try {
+    meta = await promptForMetadata({ title: doc.name });
+  } catch {
+    return; // user cancelled
+  }
+
   setButtonBusy(btn, 'Building…');
   bsToast.show(`Packaging ${doc.pages.length} pages…`, 'secondary');
 
@@ -1002,7 +1123,7 @@ async function handleDocZip(docId, btn) {
     const base = safeFilename(doc.name);
     const files = {};
     for (let i = 0; i < doc.pages.length; i++) {
-      const bytes = await buildPdf([doc.pages[i]]);
+      const bytes = await buildPdf([doc.pages[i]], meta);
       files[`page-${String(i + 1).padStart(3, '0')}.pdf`] = bytes;
     }
 
@@ -1034,9 +1155,15 @@ async function handleDocSplitRange(docId, fromInput, toInput, btn) {
     bsToast.show(`Range must be between 1 and ${doc.pages.length}.`, 'warning');
     return;
   }
+  let meta;
+  try {
+    meta = await promptForMetadata({ title: `${doc.name} (pages ${from}–${to})` });
+  } catch {
+    return; // user cancelled
+  }
   setButtonBusy(btn, 'Extracting…');
   try {
-    const bytes = await buildPdf(doc.pages.slice(from - 1, to));
+    const bytes = await buildPdf(doc.pages.slice(from - 1, to), meta);
     downloadPdf(bytes, `${safeFilename(doc.name)}-pages-${from}-to-${to}.pdf`);
     bsToast.show(`Extracted pages ${from}–${to}.`, 'success');
   } catch (err) {
@@ -1048,6 +1175,169 @@ async function handleDocSplitRange(docId, fromInput, toInput, btn) {
 }
 
 // ---------------------------------------------------------------------------
+// Modal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Show the password dialog for an encrypted PDF and return the entered password.
+ * Rejects if the user clicks "Skip file" or closes the dialog.
+ * @param {string} filename
+ * @returns {Promise<string>}
+ */
+function promptForPassword(filename) {
+  return new Promise((resolve, reject) => {
+    const dialog = document.getElementById('passwordDialog');
+    document.getElementById('passwordDialogFileName').textContent = filename;
+    document.getElementById('passwordError').style.display = 'none';
+    document.getElementById('passwordInput').value = '';
+
+    const onSubmit = () => {
+      resolve(document.getElementById('passwordInput').value);
+      cleanup();
+      dialog.close();
+    };
+    const onSkip = () => {
+      reject(new Error('cancelled'));
+      cleanup();
+      dialog.close();
+    };
+    const onCancel = () => { // Escape key
+      reject(new Error('cancelled'));
+      cleanup();
+    };
+    const cleanup = () => {
+      document.getElementById('passwordSubmitBtn').removeEventListener('click', onSubmit);
+      document.getElementById('passwordSkipBtn').removeEventListener('click', onSkip);
+      dialog.removeEventListener('cancel', onCancel);
+    };
+
+    document.getElementById('passwordSubmitBtn').addEventListener('click', onSubmit, { once: true });
+    document.getElementById('passwordSkipBtn').addEventListener('click', onSkip, { once: true });
+    document.getElementById('passwordCancelBtn').addEventListener('click', onSkip, { once: true });
+    dialog.addEventListener('cancel', onCancel, { once: true });
+    dialog.showModal();
+    document.getElementById('passwordInput').focus();
+  });
+}
+
+/**
+ * Show the metadata dialog and return the user-entered metadata.
+ * Rejects if the user cancels.
+ * @param {{ title?: string, author?: string, subject?: string }} defaults
+ * @returns {Promise<{title:string, author:string, subject:string}>}
+ */
+function promptForMetadata(defaults = {}) {
+  return new Promise((resolve, reject) => {
+    const dialog = document.getElementById('metadataDialog');
+    document.getElementById('metaTitle').value   = defaults.title   || '';
+    document.getElementById('metaAuthor').value  = defaults.author  || '';
+    document.getElementById('metaSubject').value = defaults.subject || '';
+
+    const onConfirm = () => {
+      resolve({
+        title:   document.getElementById('metaTitle').value.trim(),
+        author:  document.getElementById('metaAuthor').value.trim(),
+        subject: document.getElementById('metaSubject').value.trim(),
+      });
+      cleanup();
+      dialog.close();
+    };
+    const onCancel = () => {
+      reject(new Error('cancelled'));
+      cleanup();
+      if (dialog.open) dialog.close();
+    };
+    const cleanup = () => {
+      document.getElementById('metadataConfirmBtn').removeEventListener('click', onConfirm);
+      document.getElementById('metadataCancelBtn').removeEventListener('click', onCancel);
+      dialog.removeEventListener('cancel', onCancel);
+    };
+
+    document.getElementById('metadataConfirmBtn').addEventListener('click', onConfirm, { once: true });
+    document.getElementById('metadataCancelBtn').addEventListener('click', onCancel, { once: true });
+    dialog.addEventListener('cancel', onCancel, { once: true });
+    dialog.showModal();
+    document.getElementById('metaTitle').focus();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// IndexedDB persistence
+// ---------------------------------------------------------------------------
+
+/** Open (or create) the PdfWorkerDB database. */
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('PdfWorkerDB', 1);
+    req.onupgradeneeded = e => {
+      const idb = e.target.result;
+      if (!idb.objectStoreNames.contains('documents')) {
+        idb.createObjectStore('documents', { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+/** Save the current documents state to IndexedDB. No-ops if db is unavailable. */
+function persistState() {
+  if (!db) return Promise.resolve();
+  // Snapshot data BEFORE opening the transaction (avoids any async work inside it)
+  const snapshots = documents.map(doc => ({
+    id:    doc.id,
+    name:  doc.name,
+    pages: doc.pages.map(p => ({
+      id:                p.id,
+      sourceFileName:    p.sourceFileName,
+      sourcePdfBlob:     p.sourcePdfBlob,   // Blobs are directly storable in IndexedDB
+      originalPageIndex: p.originalPageIndex,
+      thumbnailDataUrl:  p.thumbnailDataUrl,
+      rotation:          p.rotation,
+    })),
+  }));
+
+  // All IDB operations run synchronously — no await inside, so the transaction
+  // cannot auto-commit between clear() and the put() calls.
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('documents', 'readwrite');
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    const store = tx.objectStore('documents');
+    store.clear();
+    for (const snap of snapshots) {
+      store.put(snap);
+    }
+  });
+}
+
+/** Restore documents from IndexedDB on startup. Renders the restored state. */
+async function restoreState() {
+  if (!db) return;
+  const tx = db.transaction('documents', 'readonly');
+  const store = tx.objectStore('documents');
+  const rows = await new Promise((res, rej) => {
+    const r = store.getAll(); r.onsuccess = () => res(r.result); r.onerror = rej;
+  });
+  if (!rows.length) return;
+
+  documents = rows.map(row => ({
+    id:    row.id,
+    name:  row.name,
+    pages: row.pages.map(p => ({ ...p })),
+  }));
+  activeDocId = documents[0]?.id ?? null;
+
+  // Seed the history baseline so undo/redo starts from the restored state
+  history = [[], documents.map(doc => ({ ...doc, pages: [...doc.pages] }))];
+  historyIndex = 1;
+
+  renderAll();
+  renderThumbnailsProgressively();
+  updateUndoRedoButtons();
+}
+
+// ---------------------------------------------------------------------------
 // Global toolbar handlers
 // ---------------------------------------------------------------------------
 
@@ -1056,8 +1346,10 @@ function handleClearAll() {
   if (!confirm('Clear all documents and pages? This cannot be undone.')) return;
   documents = [];
   activeDocId = null;
-  selectedPageId = null;
+  selectedPageIds.clear();
+  lastSelectedId = null;
   history = [[]];
   historyIndex = 0;
+  persistState().catch(console.error);
   renderAll();
 }

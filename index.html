@@ -60,6 +60,49 @@
 
   </div>
 
+  <!-- Password dialog (encrypted PDFs) -->
+  <dialog id="passwordDialog" aria-labelledby="passwordDialogTitle">
+    <div class="pwdialog-header">
+      <span id="passwordDialogTitle">PDF is password-protected</span>
+      <button id="passwordCancelBtn" class="btn-close" aria-label="Skip file"></button>
+    </div>
+    <div class="pwdialog-body">
+      <p id="passwordDialogFileName" class="text-muted small mb-2"></p>
+      <input type="password" id="passwordInput" class="form-control form-control-sm" placeholder="Enter password…">
+      <div id="passwordError" class="text-danger small mt-1" style="display:none">Incorrect password — try again.</div>
+    </div>
+    <div class="pwdialog-footer">
+      <button class="btn btn-secondary btn-sm" id="passwordSkipBtn">Skip file</button>
+      <button class="btn btn-primary btn-sm" id="passwordSubmitBtn">Unlock</button>
+    </div>
+  </dialog>
+
+  <!-- Metadata dialog (before download) -->
+  <dialog id="metadataDialog" aria-labelledby="metadataDialogTitle">
+    <div class="pwdialog-header">
+      <span id="metadataDialogTitle">PDF Metadata</span>
+      <button id="metadataCancelBtn" class="btn-close" aria-label="Cancel"></button>
+    </div>
+    <div class="pwdialog-body">
+      <div class="mb-3">
+        <label class="form-label small mb-1" for="metaTitle">Title</label>
+        <input id="metaTitle" type="text" class="form-control form-control-sm">
+      </div>
+      <div class="mb-3">
+        <label class="form-label small mb-1" for="metaAuthor">Author</label>
+        <input id="metaAuthor" type="text" class="form-control form-control-sm">
+      </div>
+      <div>
+        <label class="form-label small mb-1" for="metaSubject">Subject</label>
+        <input id="metaSubject" type="text" class="form-control form-control-sm">
+      </div>
+    </div>
+    <div class="pwdialog-footer">
+      <button class="btn btn-secondary btn-sm" id="metadataCancelBtn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="metadataConfirmBtn">Download</button>
+    </div>
+  </dialog>
+
   <!-- Right-click Context Menu -->
   <div id="context-menu" class="context-menu d-none" style="position:fixed">
     <div class="context-menu-item" data-action="rotate">Rotate 90° clockwise</div>

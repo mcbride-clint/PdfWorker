@@ -450,6 +450,49 @@ body {
   min-height: 0;
 }
 
+/* ============================================================
+   Password / Metadata dialogs (native <dialog>)
+   ============================================================ */
+
+#passwordDialog,
+#metadataDialog {
+  width: min(92vw, 380px);
+  padding: 0;
+  border: none;
+  border-radius: 0.5rem;
+  box-shadow: 0 0.5rem 2rem rgba(0,0,0,.35);
+  overflow: hidden;
+}
+
+#passwordDialog::backdrop,
+#metadataDialog::backdrop {
+  background: rgba(0,0,0,.45);
+}
+
+.pwdialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid #dee2e6;
+  font-weight: 600;
+  font-size: 0.875rem;
+  background: #f8f9fa;
+}
+
+.pwdialog-body {
+  padding: 1rem;
+}
+
+.pwdialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid #dee2e6;
+  background: #f8f9fa;
+}
+
 @media (max-width: 576px) {
   .split-input {
     width: 4rem !important;
